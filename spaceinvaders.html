@@ -1,0 +1,985 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Space Invaders</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #1a1a2e;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      overflow: hidden;
+      font-family: 'Segoe UI', sans-serif;
+    }
+    canvas {
+      display: block;
+      border: 2px solid #0f3460;
+      background: #0d0d1a;
+    }
+  </style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+<script>
+'use strict';
+
+// ── SECTION 1: CONSTANTS & CONFIG ──────────────────────────────────────────
+
+const CANVAS_W = 800;
+const CANVAS_H = 600;
+
+const COLORS = {
+  bg:    '#0d0d1a',
+  dark1: '#1a1a2e',
+  dark2: '#16213e',
+  dark3: '#0f3460',
+  red:   '#e94560',
+  cyan:  '#a8dadc',
+  white: '#eeeeff',
+  yellow:'#f4d03f',
+  green: '#2ecc71',
+};
+
+const STATES = { MENU:'MENU', PLAYING:'PLAYING', PAUSED:'PAUSED',
+                 LEVEL_TRANSITION:'LEVEL_TRANSITION', WIN:'WIN', LOSE:'LOSE' };
+
+const PLAYER_W = 40, PLAYER_H = 24;
+const ALIEN_W  = 32, ALIEN_H  = 24;
+const ALIEN_COL_GAP = 14;
+const ALIEN_ROW_GAP = 12;
+const BULLET_W = 3,  BULLET_H = 12;
+const PLAYER_BULLET_SPEED = 480;
+const ALIEN_BULLET_SPEED  = 200;
+const PLAYER_SPEED = 280;
+const GROUND_Y = CANVAS_H - 48;
+const PLAYER_START_Y = GROUND_Y - PLAYER_H - 4;
+
+// ── SECTION 2: LEVEL DATA ──────────────────────────────────────────────────
+
+const LEVELS = [
+  { rows:3, cols:9,  alienSpeed:60,  drop:16, fireRate:0.003, bulletMult:1.0,  pattern:'march',  divebomb:false },
+  { rows:4, cols:10, alienSpeed:90,  drop:18, fireRate:0.005, bulletMult:1.1,  pattern:'march',  divebomb:false },
+  { rows:4, cols:10, alienSpeed:120, drop:20, fireRate:0.007, bulletMult:1.25, pattern:'zigzag', divebomb:false },
+  { rows:5, cols:11, alienSpeed:155, drop:22, fireRate:0.010, bulletMult:1.4,  pattern:'zigzag', divebomb:true  },
+  { rows:5, cols:11, alienSpeed:200, drop:24, fireRate:0.014, bulletMult:1.6,  pattern:'march',  divebomb:true  },
+];
+
+function alienPoints(row) {
+  if (row === 0) return 30;
+  if (row <= 2)  return 20;
+  return 10;
+}
+
+// ── SECTION 3: INPUT HANDLER ───────────────────────────────────────────────
+
+const InputHandler = {
+  keys: {},
+  justPressed: {},
+  init() {
+    window.addEventListener('keydown', e => {
+      if (!this.keys[e.code]) this.justPressed[e.code] = true;
+      this.keys[e.code] = true;
+      if (['Space','ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.code))
+        e.preventDefault();
+    });
+    window.addEventListener('keyup', e => { delete this.keys[e.code]; });
+  },
+  isDown(code)    { return !!this.keys[code]; },
+  wasPressed(code){ const v = !!this.justPressed[code]; return v; },
+  flush()         { this.justPressed = {}; },
+};
+
+// ── SECTION 4: PLAYER ─────────────────────────────────────────────────────
+
+const Player = {
+  x: CANVAS_W / 2, y: PLAYER_START_Y,
+  lives: 3, score: 0,
+  shootCooldown: 0,
+  SHOOT_COOLDOWN: 0.35,
+  isInvincible: false,
+  invincibleTimer: 0,
+  flashTimer: 0,
+
+  init(x) {
+    this.x = x;
+    this.y = PLAYER_START_Y;
+    this.shootCooldown = 0;
+    this.isInvincible  = false;
+    this.invincibleTimer = 0;
+  },
+
+  update(dt) {
+    if (InputHandler.isDown('ArrowLeft'))  this.x = Math.max(PLAYER_W/2 + 8, this.x - PLAYER_SPEED * dt);
+    if (InputHandler.isDown('ArrowRight')) this.x = Math.min(CANVAS_W - PLAYER_W/2 - 8, this.x + PLAYER_SPEED * dt);
+    if (this.shootCooldown > 0) this.shootCooldown -= dt;
+    if (InputHandler.wasPressed('Space') && this.shootCooldown <= 0) {
+      BulletManager.addPlayerBullet(this.x, this.y);
+      this.shootCooldown = this.SHOOT_COOLDOWN;
+    }
+    if (this.isInvincible) {
+      this.invincibleTimer -= dt;
+      if (this.invincibleTimer <= 0) this.isInvincible = false;
+    }
+    if (this.flashTimer > 0) this.flashTimer -= dt;
+  },
+
+  hit() {
+    this.lives--;
+    this.isInvincible    = true;
+    this.invincibleTimer = 1.5;
+    this.flashTimer      = 0.15;
+  },
+
+  draw(ctx) {
+    if (this.isInvincible && Math.floor(this.invincibleTimer * 8) % 2 === 0) return;
+    ctx.save();
+    ctx.fillStyle = COLORS.cyan;
+    ctx.strokeStyle = COLORS.cyan;
+    ctx.lineWidth = 1.5;
+    const x = this.x, y = this.y;
+    // Main body
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x - 8, y + PLAYER_H * 0.6);
+    ctx.lineTo(x - PLAYER_W/2, y + PLAYER_H);
+    ctx.lineTo(x + PLAYER_W/2, y + PLAYER_H);
+    ctx.lineTo(x + 8, y + PLAYER_H * 0.6);
+    ctx.closePath();
+    ctx.fill();
+    // Cannon
+    ctx.fillRect(x - 3, y - 6, 6, 10);
+    // Engine glow
+    ctx.fillStyle = COLORS.white;
+    ctx.fillRect(x - 5, y + PLAYER_H - 3, 4, 3);
+    ctx.fillRect(x + 1, y + PLAYER_H - 3, 4, 3);
+    ctx.restore();
+  },
+};
+
+// ── SECTION 5: ALIEN GRID ─────────────────────────────────────────────────
+
+const AlienGrid = {
+  aliens: [],
+  rows: 0, cols: 0,
+  offsetX: 0, offsetY: 0,
+  direction: 1,
+  baseSpeed: 0,
+  dropAmount: 0,
+  fireRate: 0,
+  bulletMult: 1,
+  pattern: 'march',
+  divebombEnabled: false,
+  animFrame: 0,
+  animTimer: 0,
+  ANIM_INTERVAL: 0.5,
+  zigzagTime: 0,
+  divebombers: [],
+  divebombCooldown: 0,
+
+  init(cfg) {
+    this.rows          = cfg.rows;
+    this.cols          = cfg.cols;
+    this.baseSpeed     = cfg.alienSpeed;
+    this.dropAmount    = cfg.drop;
+    this.fireRate      = cfg.fireRate;
+    this.bulletMult    = cfg.bulletMult;
+    this.pattern       = cfg.pattern;
+    this.divebombEnabled = cfg.divebomb;
+    this.direction     = 1;
+    this.animFrame     = 0;
+    this.animTimer     = this.ANIM_INTERVAL;
+    this.zigzagTime    = 0;
+    this.divebombers   = [];
+    this.divebombCooldown = 5;
+
+    // Centre the grid
+    const totalW = this.cols * (ALIEN_W + ALIEN_COL_GAP) - ALIEN_COL_GAP;
+    this.offsetX = (CANVAS_W - totalW) / 2;
+    this.offsetY = 80;
+
+    this.aliens = [];
+    for (let r = 0; r < this.rows; r++) {
+      for (let c = 0; c < this.cols; c++) {
+        this.aliens.push({
+          row: r, col: c, alive: true,
+          x: 0, y: 0,   // computed in update
+          points: alienPoints(r),
+        });
+      }
+    }
+  },
+
+  getLiving() { return this.aliens.filter(a => a.alive); },
+
+  _speedScale() {
+    const total   = this.rows * this.cols;
+    const living  = this.getLiving().length;
+    return Math.min(4.0, total / Math.max(1, living));
+  },
+
+  update(dt) {
+    const living = this.getLiving();
+    if (living.length === 0) return;
+
+    // Animation heartbeat
+    this.animTimer -= dt;
+    if (this.animTimer <= 0) {
+      this.animFrame = 1 - this.animFrame;
+      const ratio = living.length / (this.rows * this.cols);
+      this.animTimer = Math.max(0.08, 0.5 * ratio);
+    }
+
+    // Zigzag
+    if (this.pattern === 'zigzag') this.zigzagTime += dt;
+
+    // Divebombers update
+    for (let i = this.divebombers.length - 1; i >= 0; i--) {
+      const db = this.divebombers[i];
+      db.x += db.vx * dt;
+      db.y += db.vy * dt;
+      if (db.y > CANVAS_H + 40) this.divebombers.splice(i, 1);
+    }
+
+    // Possibly launch new divebomber
+    if (this.divebombEnabled) {
+      this.divebombCooldown -= dt;
+      if (this.divebombCooldown <= 0 && living.length > 0) {
+        this._launchDivebomber(living);
+        this.divebombCooldown = 4 + Math.random() * 4;
+      }
+    }
+
+    // March
+    const speed = this.baseSpeed * this._speedScale();
+    this.offsetX += this.direction * speed * dt;
+
+    // Recalculate positions
+    this._calcPositions();
+
+    // Boundary check on actual alien positions
+    const xs = living.map(a => a.x);
+    const leftEdge  = Math.min(...xs) - ALIEN_W / 2;
+    const rightEdge = Math.max(...xs) + ALIEN_W / 2;
+
+    if (rightEdge >= CANVAS_W - 10 && this.direction === 1) {
+      this.direction = -1;
+      this.offsetY  += this.dropAmount;
+      this._calcPositions();
+    } else if (leftEdge <= 10 && this.direction === -1) {
+      this.direction = 1;
+      this.offsetY  += this.dropAmount;
+      this._calcPositions();
+    }
+
+    // Alien firing
+    for (const a of living) {
+      if (Math.random() < this.fireRate * dt) {
+        BulletManager.addAlienBullet(a.x, a.y + ALIEN_H, this.bulletMult);
+      }
+    }
+  },
+
+  _calcPositions() {
+    const zigY = this.pattern === 'zigzag'
+      ? Math.sin(this.zigzagTime * 1.8) * 12
+      : 0;
+    for (const a of this.aliens) {
+      a.x = this.offsetX + a.col * (ALIEN_W + ALIEN_COL_GAP) + ALIEN_W / 2;
+      a.y = this.offsetY + a.row * (ALIEN_H + ALIEN_ROW_GAP) + zigY;
+    }
+  },
+
+  _launchDivebomber(living) {
+    // Pick a random bottom-most alien in its column
+    const maxRow = Math.max(...living.map(a => a.row));
+    const bottomAliens = living.filter(a => a.row === maxRow);
+    if (bottomAliens.length === 0) return;
+    const src = bottomAliens[Math.floor(Math.random() * bottomAliens.length)];
+    const dx = Player.x - src.x;
+    const dy = Player.y - src.y;
+    const len = Math.sqrt(dx*dx + dy*dy) || 1;
+    const speed = 180 + Math.random() * 60;
+    this.divebombers.push({
+      x: src.x, y: src.y,
+      vx: (dx / len) * speed + (Math.random() - 0.5) * 40,
+      vy: (dy / len) * speed,
+      row: src.row,
+    });
+  },
+
+  getLowestY() {
+    const living = this.getLiving();
+    if (living.length === 0) return 0;
+    return Math.max(...living.map(a => a.y + ALIEN_H));
+  },
+
+  draw(ctx) {
+    // Draw grid aliens
+    for (const a of this.aliens) {
+      if (!a.alive) continue;
+      drawAlien(ctx, a.x, a.y, a.row, this.animFrame);
+    }
+    // Draw divebombers
+    ctx.save();
+    for (const db of this.divebombers) {
+      drawAlien(ctx, db.x, db.y, db.row, this.animFrame);
+    }
+    ctx.restore();
+  },
+};
+
+function drawAlien(ctx, x, y, row, frame) {
+  ctx.save();
+  const color = row === 0 ? COLORS.yellow : (row <= 2 ? COLORS.cyan : COLORS.red);
+  ctx.fillStyle = color;
+  ctx.strokeStyle = color;
+
+  if (row === 0) {
+    // Squid — round head
+    ctx.beginPath();
+    ctx.arc(x, y + 8, 8, Math.PI, 0);
+    ctx.fill();
+    ctx.fillRect(x - 8, y + 8, 16, 8);
+    // Tentacles
+    const tOff = frame === 0 ? 0 : 2;
+    for (let i = -1; i <= 1; i += 2) {
+      ctx.fillRect(x + i * 9 - 2, y + 16, 4, 4 + tOff);
+    }
+    ctx.fillRect(x - 4, y + 16, 4, 6 - tOff);
+    ctx.fillRect(x,     y + 16, 4, 6 - tOff);
+    // Eyes
+    ctx.fillStyle = COLORS.dark1;
+    ctx.fillRect(x - 5, y + 4, 3, 4);
+    ctx.fillRect(x + 2,  y + 4, 3, 4);
+  } else if (row <= 2) {
+    // Crab — wide body
+    const armOff = frame === 0 ? 0 : 3;
+    ctx.fillRect(x - 12, y + 4, 24, 12);
+    ctx.fillRect(x - 8, y, 16, 6);
+    // Claws
+    ctx.fillRect(x - 14, y + armOff, 4, 8);
+    ctx.fillRect(x + 10,  y + armOff, 4, 8);
+    // Legs
+    for (let i = 0; i < 3; i++) {
+      ctx.fillRect(x - 10 + i * 6 - 2, y + 16, 4, frame === 0 ? 5 : 3);
+    }
+    ctx.fillStyle = COLORS.dark1;
+    ctx.fillRect(x - 6, y + 2, 3, 4);
+    ctx.fillRect(x + 3, y + 2, 3, 4);
+  } else {
+    // Octopus — oval
+    ctx.beginPath();
+    ctx.ellipse(x, y + 9, 12, 9, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // Legs
+    const legOff = frame === 0 ? 0 : 2;
+    for (let i = -2; i <= 2; i++) {
+      if (i === 0) continue;
+      ctx.fillRect(x + i * 5 - 2, y + 17, 4, 4 + (Math.abs(i) === 1 ? legOff : -legOff));
+    }
+    ctx.fillStyle = COLORS.dark1;
+    ctx.fillRect(x - 6, y + 5, 4, 5);
+    ctx.fillRect(x + 2, y + 5, 4, 5);
+  }
+  ctx.restore();
+}
+
+// ── SECTION 6: BULLET MANAGER ─────────────────────────────────────────────
+
+const BulletManager = {
+  bullets: [],
+
+  init()  { this.bullets = []; },
+  clear() { this.bullets = []; },
+
+  addPlayerBullet(x, y) {
+    this.bullets.push({ x, y, vx:0, vy:-PLAYER_BULLET_SPEED, owner:'player', active:true, age:0 });
+  },
+
+  addAlienBullet(x, y, mult) {
+    const vx = (Math.random() - 0.5) * 30;
+    this.bullets.push({ x, y, vx, vy: ALIEN_BULLET_SPEED * mult, owner:'alien', active:true, age:0 });
+  },
+
+  update(dt) {
+    for (const b of this.bullets) {
+      if (!b.active) continue;
+      b.x  += b.vx * dt;
+      b.y  += b.vy * dt;
+      b.age += dt;
+      if (b.y < -20 || b.y > CANVAS_H + 20 || b.x < -20 || b.x > CANVAS_W + 20)
+        b.active = false;
+    }
+    // Prune dead bullets occasionally
+    if (this.bullets.length > 120)
+      this.bullets = this.bullets.filter(b => b.active);
+  },
+
+  getActive() { return this.bullets.filter(b => b.active); },
+};
+
+// ── SECTION 7: PARTICLE SYSTEM ────────────────────────────────────────────
+
+const ParticleSystem = {
+  particles: [],
+
+  spawnExplosion(x, y, color, count) {
+    for (let i = 0; i < count; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const spd   = 60 + Math.random() * 120;
+      this.particles.push({
+        x, y,
+        vx: Math.cos(angle) * spd,
+        vy: Math.sin(angle) * spd - 60,
+        life: 0.5 + Math.random() * 0.4,
+        maxLife: 0,
+        size: 2 + Math.random() * 3,
+        color: Math.random() < 0.7 ? color : COLORS.white,
+      });
+      this.particles[this.particles.length-1].maxLife = this.particles[this.particles.length-1].life;
+    }
+  },
+
+  update(dt) {
+    for (const p of this.particles) {
+      p.x    += p.vx * dt;
+      p.y    += p.vy * dt;
+      p.vy   += 120 * dt;  // gravity
+      p.life -= dt;
+    }
+    this.particles = this.particles.filter(p => p.life > 0);
+  },
+
+  draw(ctx) {
+    ctx.save();
+    for (const p of this.particles) {
+      ctx.globalAlpha = Math.max(0, p.life / p.maxLife);
+      ctx.fillStyle   = p.color;
+      const s = p.size * (p.life / p.maxLife);
+      ctx.fillRect(p.x - s/2, p.y - s/2, s, s);
+    }
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  },
+};
+
+// ── SECTION 8: COLLISION ──────────────────────────────────────────────────
+
+const Collision = {
+  aabb(ax, ay, aw, ah, bx, by, bw, bh) {
+    return ax < bx + bw && ax + aw > bx &&
+           ay < by + bh && ay + ah > by;
+  },
+};
+
+function bulletRect(b)  { return [b.x - BULLET_W/2, b.y, BULLET_W, BULLET_H]; }
+function alienRect(a)   { return [a.x - ALIEN_W*0.4, a.y + ALIEN_H*0.1, ALIEN_W*0.8, ALIEN_H*0.85]; }
+function playerRect()   { return [Player.x - PLAYER_W*0.38, Player.y + 2, PLAYER_W*0.76, PLAYER_H - 4]; }
+
+// ── SECTION 9: HUD ────────────────────────────────────────────────────────
+
+const HUD = {
+  draw(ctx, state) {
+    ctx.save();
+    // Ground line
+    ctx.strokeStyle = COLORS.dark3;
+    ctx.lineWidth   = 2;
+    ctx.beginPath();
+    ctx.moveTo(0, GROUND_Y + PLAYER_H + 8);
+    ctx.lineTo(CANVAS_W, GROUND_Y + PLAYER_H + 8);
+    ctx.stroke();
+
+    // Score
+    ctx.font        = 'bold 16px "Courier New", monospace';
+    ctx.fillStyle   = COLORS.cyan;
+    ctx.fillText('SCORE', 20, 24);
+    ctx.fillStyle   = COLORS.white;
+    ctx.fillText(String(state.score).padStart(6, '0'), 20, 44);
+
+    // Level
+    ctx.fillStyle   = COLORS.cyan;
+    ctx.textAlign   = 'center';
+    ctx.fillText('LEVEL', CANVAS_W / 2, 24);
+    ctx.fillStyle   = COLORS.white;
+    ctx.fillText(`${state.level} / 5`, CANVAS_W / 2, 44);
+
+    // Lives
+    ctx.fillStyle   = COLORS.cyan;
+    ctx.textAlign   = 'right';
+    ctx.fillText('LIVES', CANVAS_W - 20, 24);
+    for (let i = 0; i < state.lives; i++) {
+      _drawMiniShip(ctx, CANVAS_W - 20 - i * 24, 36);
+    }
+
+    // High score line
+    const hi = parseInt(localStorage.getItem('si_hiscore') || '0');
+    ctx.fillStyle   = COLORS.dark3;
+    ctx.font        = '12px "Courier New", monospace';
+    ctx.textAlign   = 'center';
+    ctx.fillText(`HI: ${String(hi).padStart(6,'0')}`, CANVAS_W / 2, CANVAS_H - 12);
+
+    ctx.restore();
+  },
+};
+
+function _drawMiniShip(ctx, x, y) {
+  ctx.save();
+  ctx.fillStyle = COLORS.cyan;
+  ctx.beginPath();
+  ctx.moveTo(x, y - 6);
+  ctx.lineTo(x - 8, y + 2);
+  ctx.lineTo(x + 8, y + 2);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+// ── SECTION 10: STARFIELD ─────────────────────────────────────────────────
+
+const Starfield = {
+  stars: [],
+  init() {
+    this.stars = [];
+    const layers = [
+      { count:40, size:1,   speed:8,  color:'rgba(180,200,220,0.4)' },
+      { count:25, size:1.5, speed:15, color:'rgba(200,220,240,0.55)' },
+      { count:15, size:2,   speed:25, color:'rgba(220,235,255,0.7)' },
+    ];
+    for (const l of layers) {
+      for (let i = 0; i < l.count; i++) {
+        this.stars.push({ x: Math.random()*CANVAS_W, y: Math.random()*CANVAS_H,
+                          size: l.size, speed: l.speed, color: l.color });
+      }
+    }
+  },
+  update(dt) {
+    for (const s of this.stars) {
+      s.y += s.speed * dt;
+      if (s.y > CANVAS_H) s.y = 0;
+    }
+  },
+  draw(ctx) {
+    ctx.save();
+    for (const s of this.stars) {
+      ctx.fillStyle = s.color;
+      ctx.fillRect(s.x, s.y, s.size, s.size);
+    }
+    ctx.restore();
+  },
+};
+
+// ── SECTION 11: RENDERER ──────────────────────────────────────────────────
+
+const Renderer = {
+  menuTime: 0,
+  menuAliens: [],
+
+  initMenu() {
+    this.menuTime   = 0;
+    this.menuAliens = [];
+    for (let c = 0; c < 7; c++) {
+      this.menuAliens.push({ x: 120 + c * 82, y: 310, dir: 1 });
+    }
+  },
+
+  updateMenu(dt) {
+    this.menuTime += dt;
+    for (const a of this.menuAliens) {
+      a.x += 40 * a.dir * dt;
+      if (a.x > CANVAS_W - 60) a.dir = -1;
+      if (a.x < 60)            a.dir =  1;
+    }
+  },
+
+  drawMenu(ctx) {
+    // Title
+    ctx.save();
+    ctx.textAlign   = 'center';
+    ctx.font        = 'bold 64px "Segoe UI", sans-serif';
+    ctx.fillStyle   = COLORS.red;
+    ctx.fillText('SPACE', CANVAS_W/2, 160);
+    ctx.fillStyle   = COLORS.cyan;
+    ctx.fillText('INVADERS', CANVAS_W/2, 230);
+
+    // Demo aliens
+    const frame = Math.floor(this.menuTime * 2) % 2;
+    for (let i = 0; i < this.menuAliens.length; i++) {
+      const a = this.menuAliens[i];
+      drawAlien(ctx, a.x, a.y, i % 3, frame);
+    }
+
+    // Blink "PRESS ENTER"
+    if (Math.sin(this.menuTime * Math.PI * 2) > 0) {
+      ctx.font      = '22px "Courier New", monospace';
+      ctx.fillStyle = COLORS.cyan;
+      ctx.fillText('PRESS ENTER TO PLAY', CANVAS_W/2, 420);
+    }
+
+    // Controls hint
+    ctx.font        = '14px "Segoe UI", sans-serif';
+    ctx.fillStyle   = COLORS.dark3;
+    ctx.fillText('← → MOVE    SPACE SHOOT    P PAUSE', CANVAS_W/2, 470);
+
+    // Hi score
+    const hi = parseInt(localStorage.getItem('si_hiscore') || '0');
+    ctx.font        = '16px "Courier New", monospace';
+    ctx.fillStyle   = COLORS.yellow;
+    ctx.fillText(`HIGH SCORE: ${String(hi).padStart(6,'0')}`, CANVAS_W/2, 510);
+    ctx.restore();
+  },
+
+  drawLevelTransition(ctx, level, timer) {
+    // Dim overlay
+    ctx.save();
+    ctx.fillStyle = 'rgba(13,13,26,0.72)';
+    ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+    ctx.textAlign = 'center';
+    ctx.font      = 'bold 72px "Segoe UI", sans-serif';
+    ctx.fillStyle = COLORS.cyan;
+    ctx.fillText(`LEVEL ${level}`, CANVAS_W/2, CANVAS_H/2 - 30);
+    ctx.font      = '28px "Segoe UI", sans-serif';
+    ctx.fillStyle = COLORS.white;
+    ctx.fillText('GET READY!', CANVAS_W/2, CANVAS_H/2 + 30);
+    // Lives remaining
+    for (let i = 0; i < Player.lives; i++) {
+      _drawMiniShip(ctx, CANVAS_W/2 - (Player.lives-1)*14 + i*28, CANVAS_H/2 + 80);
+    }
+    ctx.restore();
+  },
+
+  drawPaused(ctx) {
+    ctx.save();
+    ctx.fillStyle = 'rgba(13,13,26,0.6)';
+    ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+    ctx.textAlign = 'center';
+    ctx.font      = 'bold 56px "Segoe UI", sans-serif';
+    ctx.fillStyle = COLORS.yellow;
+    ctx.fillText('PAUSED', CANVAS_W/2, CANVAS_H/2);
+    ctx.font      = '20px "Segoe UI", sans-serif';
+    ctx.fillStyle = COLORS.cyan;
+    ctx.fillText('Press P to resume', CANVAS_W/2, CANVAS_H/2 + 48);
+    ctx.restore();
+  },
+
+  drawWin(ctx, score) {
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.font      = 'bold 72px "Segoe UI", sans-serif';
+    ctx.fillStyle = COLORS.cyan;
+    ctx.fillText('YOU WIN!', CANVAS_W/2, 200);
+    ctx.font      = '28px "Courier New", monospace';
+    ctx.fillStyle = COLORS.white;
+    ctx.fillText(`SCORE: ${String(score).padStart(6,'0')}`, CANVAS_W/2, 280);
+    ctx.font      = '20px "Segoe UI", sans-serif';
+    ctx.fillStyle = COLORS.green;
+    ctx.fillText('CONGRATULATIONS!', CANVAS_W/2, 340);
+    const hi = parseInt(localStorage.getItem('si_hiscore')||'0');
+    if (score >= hi) {
+      ctx.fillStyle = COLORS.yellow;
+      ctx.font      = '22px "Courier New", monospace';
+      if (Math.sin(Date.now() / 300) > 0) ctx.fillText('NEW HIGH SCORE!', CANVAS_W/2, 390);
+    }
+    ctx.font      = '20px "Courier New", monospace';
+    ctx.fillStyle = COLORS.cyan;
+    if (Math.sin(Date.now() / 500) > 0) ctx.fillText('PRESS ENTER TO PLAY AGAIN', CANVAS_W/2, 460);
+    ctx.restore();
+  },
+
+  drawLose(ctx, score) {
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.font      = 'bold 72px "Segoe UI", sans-serif';
+    ctx.fillStyle = COLORS.red;
+    ctx.fillText('GAME OVER', CANVAS_W/2, 200);
+    ctx.font      = '28px "Courier New", monospace';
+    ctx.fillStyle = COLORS.white;
+    ctx.fillText(`SCORE: ${String(score).padStart(6,'0')}`, CANVAS_W/2, 280);
+    const hi = parseInt(localStorage.getItem('si_hiscore')||'0');
+    if (score >= hi && score > 0) {
+      ctx.fillStyle = COLORS.yellow;
+      ctx.font      = '22px "Courier New", monospace';
+      if (Math.sin(Date.now() / 300) > 0) ctx.fillText('NEW HIGH SCORE!', CANVAS_W/2, 340);
+    }
+    ctx.font      = '20px "Courier New", monospace';
+    ctx.fillStyle = COLORS.cyan;
+    if (Math.sin(Date.now() / 500) > 0) ctx.fillText('PRESS ENTER TO RESTART', CANVAS_W/2, 440);
+    ctx.restore();
+  },
+};
+
+// ── SECTION 12: GAME STATE MANAGER ────────────────────────────────────────
+
+const GSM = {
+  current: STATES.MENU,
+  level: 1,
+  transitionTimer: 0,
+  totalScore: 0,
+  flashTimer: 0,
+
+  transition(newState) {
+    this.current = newState;
+    if (newState === STATES.LEVEL_TRANSITION) {
+      this.transitionTimer = 2.2;
+    }
+    if (newState === STATES.PLAYING) {
+      this._startLevel();
+    }
+    if (newState === STATES.WIN || newState === STATES.LOSE) {
+      const hi = parseInt(localStorage.getItem('si_hiscore') || '0');
+      if (this.totalScore > hi) localStorage.setItem('si_hiscore', this.totalScore);
+    }
+  },
+
+  _startLevel() {
+    AlienGrid.init(LEVELS[this.level - 1]);
+    BulletManager.clear();
+    ParticleSystem.particles = [];
+    Player.x = CANVAS_W / 2;
+    Player.y = PLAYER_START_Y;
+    Player.shootCooldown   = 0;
+    Player.isInvincible    = false;
+    Player.invincibleTimer = 0;
+  },
+
+  startNewGame() {
+    this.level      = 1;
+    this.totalScore = 0;
+    Player.lives    = 3;
+    Player.score    = 0;
+    this.transition(STATES.PLAYING);
+  },
+
+  nextLevel() {
+    this.level++;
+    if (this.level > 5) {
+      this.transition(STATES.WIN);
+    } else {
+      this.transition(STATES.LEVEL_TRANSITION);
+    }
+  },
+
+  addScore(pts) {
+    this.totalScore  += pts;
+    Player.score      = this.totalScore;
+  },
+};
+
+// ── SECTION 13: MAIN LOOP & BOOTSTRAP ─────────────────────────────────────
+
+const canvas = document.getElementById('gameCanvas');
+const ctx    = canvas.getContext('2d');
+
+// DPI scaling
+(function scaleCanvas() {
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width  = CANVAS_W * dpr;
+  canvas.height = CANVAS_H * dpr;
+  canvas.style.width  = CANVAS_W + 'px';
+  canvas.style.height = CANVAS_H + 'px';
+  ctx.scale(dpr, dpr);
+})();
+
+// Init subsystems
+InputHandler.init();
+Starfield.init();
+Renderer.initMenu();
+
+let lastTime = 0;
+
+function handleMenuInput() {
+  if (InputHandler.wasPressed('Enter') || InputHandler.wasPressed('NumpadEnter')) {
+    GSM.startNewGame();
+  }
+}
+
+function handlePauseInput() {
+  if (InputHandler.wasPressed('KeyP') || InputHandler.wasPressed('Escape')) {
+    GSM.transition(STATES.PLAYING);
+  }
+}
+
+function handlePlayingPause() {
+  if (InputHandler.wasPressed('KeyP') || InputHandler.wasPressed('Escape')) {
+    GSM.current = STATES.PAUSED;
+  }
+}
+
+function runCollisions() {
+  const bullets = BulletManager.getActive();
+  const living  = AlienGrid.getLiving();
+
+  for (const b of bullets) {
+    if (!b.active) continue;
+    if (b.owner === 'player') {
+      for (const a of living) {
+        if (Collision.aabb(...bulletRect(b), ...alienRect(a))) {
+          b.active = false;
+          a.alive  = false;
+          GSM.addScore(a.points);
+          ParticleSystem.spawnExplosion(a.x, a.y + ALIEN_H/2, COLORS.cyan, 12);
+          break;
+        }
+      }
+    } else {
+      // Alien bullet vs player
+      if (!Player.isInvincible &&
+          Collision.aabb(...bulletRect(b), ...playerRect())) {
+        b.active = false;
+        Player.hit();
+        GSM.flashTimer = 0.15;
+        ParticleSystem.spawnExplosion(Player.x, Player.y + PLAYER_H/2, COLORS.red, 20);
+        if (Player.lives <= 0) {
+          GSM.transition(STATES.LOSE);
+          return;
+        }
+      }
+    }
+  }
+
+  // Divebomber vs player
+  if (!Player.isInvincible) {
+    for (let i = AlienGrid.divebombers.length - 1; i >= 0; i--) {
+      const db = AlienGrid.divebombers[i];
+      if (Collision.aabb(db.x - ALIEN_W*0.4, db.y, ALIEN_W*0.8, ALIEN_H,
+                         ...playerRect())) {
+        AlienGrid.divebombers.splice(i, 1);
+        Player.hit();
+        GSM.flashTimer = 0.15;
+        ParticleSystem.spawnExplosion(Player.x, Player.y, COLORS.red, 20);
+        if (Player.lives <= 0) { GSM.transition(STATES.LOSE); return; }
+      }
+    }
+  }
+
+  // Aliens reached ground
+  if (AlienGrid.getLowestY() >= GROUND_Y) {
+    GSM.transition(STATES.LOSE);
+    return;
+  }
+
+  // Level cleared
+  if (AlienGrid.getLiving().length === 0 && AlienGrid.divebombers.length === 0) {
+    GSM.nextLevel();
+  }
+}
+
+function update(dt) {
+  const s = GSM.current;
+
+  if (GSM.flashTimer > 0) GSM.flashTimer -= dt;
+
+  if (s === STATES.MENU) {
+    Starfield.update(dt);
+    Renderer.updateMenu(dt);
+    handleMenuInput();
+    return;
+  }
+  if (s === STATES.WIN || s === STATES.LOSE) {
+    Starfield.update(dt);
+    handleMenuInput();
+    return;
+  }
+  if (s === STATES.PAUSED) {
+    handlePauseInput();
+    return;
+  }
+  if (s === STATES.LEVEL_TRANSITION) {
+    GSM.transitionTimer -= dt;
+    Starfield.update(dt);
+    if (GSM.transitionTimer <= 0) GSM.transition(STATES.PLAYING);
+    return;
+  }
+
+  // PLAYING
+  handlePlayingPause();
+  Player.update(dt);
+  AlienGrid.update(dt);
+  BulletManager.update(dt);
+  ParticleSystem.update(dt);
+  Starfield.update(dt);
+  runCollisions();
+}
+
+function drawBullet(ctx, b) {
+  ctx.save();
+  if (b.owner === 'player') {
+    ctx.fillStyle = COLORS.white;
+    ctx.fillRect(b.x - BULLET_W/2, b.y, BULLET_W, BULLET_H);
+    ctx.fillStyle = COLORS.cyan;
+    ctx.fillRect(b.x - 1, b.y, 2, 3);
+    // Trail
+    ctx.globalAlpha = 0.35;
+    ctx.fillStyle   = COLORS.cyan;
+    ctx.fillRect(b.x - 1, b.y + BULLET_H, 2, 8);
+  } else {
+    // Zigzag alien bullet
+    const seg = Math.floor(b.y / 6) % 2;
+    const ox  = seg === 0 ? -2 : 2;
+    ctx.fillStyle = COLORS.red;
+    ctx.fillRect(b.x + ox - 1, b.y,     3, 6);
+    ctx.fillRect(b.x - ox - 1, b.y + 6, 3, 6);
+  }
+  ctx.restore();
+}
+
+function render() {
+  // Clear + background
+  ctx.fillStyle = COLORS.bg;
+  ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+
+  Starfield.draw(ctx);
+
+  const s = GSM.current;
+
+  if (s === STATES.MENU) {
+    Renderer.drawMenu(ctx);
+    return;
+  }
+  if (s === STATES.WIN) {
+    Renderer.drawWin(ctx, GSM.totalScore);
+    return;
+  }
+  if (s === STATES.LOSE) {
+    Renderer.drawLose(ctx, GSM.totalScore);
+    return;
+  }
+
+  // Draw game world (PLAYING, PAUSED, LEVEL_TRANSITION)
+  AlienGrid.draw(ctx);
+  BulletManager.getActive().forEach(b => drawBullet(ctx, b));
+  Player.draw(ctx);
+  ParticleSystem.draw(ctx);
+  HUD.draw(ctx, { score: GSM.totalScore, lives: Player.lives, level: GSM.level });
+
+  // Screen flash on player hit
+  if (GSM.flashTimer > 0) {
+    ctx.save();
+    ctx.fillStyle = `rgba(233,69,96,${0.3 * GSM.flashTimer / 0.15})`;
+    ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+    ctx.restore();
+  }
+
+  if (s === STATES.PAUSED)            Renderer.drawPaused(ctx);
+  if (s === STATES.LEVEL_TRANSITION)  Renderer.drawLevelTransition(ctx, GSM.level, GSM.transitionTimer);
+}
+
+function mainLoop(timestamp) {
+  const dt = Math.min((timestamp - lastTime) / 1000, 0.05);
+  lastTime  = timestamp;
+
+  update(dt);
+  render();
+  InputHandler.flush();
+
+  requestAnimationFrame(mainLoop);
+}
+
+// Two-step bootstrap to avoid giant first dt
+requestAnimationFrame(ts => { lastTime = ts; requestAnimationFrame(mainLoop); });
+</script>
+</body>
+</html>
