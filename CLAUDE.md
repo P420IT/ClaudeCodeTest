@@ -18,7 +18,9 @@ There are no build, lint, or test commands. Development is: edit the file → re
 
 ## Git & GitHub
 
-The remote is `https://github.com/P420IT/ClaudeCodeTest`. Always commit and push after changes:
+The remote is `https://github.com/P420IT/ClaudeCodeTest`.
+
+**Commit and push after every meaningful unit of work** — completed features, bug fixes, refactors, and content changes all warrant their own commit. Never leave the session with uncommitted changes. This ensures work is never lost and any state can be restored.
 
 ```bash
 git add <file>
@@ -26,7 +28,7 @@ git commit -m "descriptive message"
 git push
 ```
 
-Commit message convention: imperative mood, explain *why* not just *what* (e.g. `"fix alien grid boundary check to use actual alien positions"`).
+Commit message convention: imperative mood, explain *why* not just *what* (e.g. `"fix alien grid boundary check to use actual alien positions"`). Do not batch unrelated changes into a single commit.
 
 ## Architecture
 
